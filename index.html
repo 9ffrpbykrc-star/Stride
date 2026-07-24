@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Stride — Run/Walk Tracker</title>
+
+<!-- PWA: installable + offline -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0B0E11">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Stride">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+
+<style>
+  :root{
+    --bg:#0B0E11;
+    --surface:#14181C;
+    --surface2:#1C2126;
+    --text:#F3F1EA;
+    --muted:#8B93A0;
+    --run:#C8FF4D;
+    --run-dim:#3d4a1a;
+    --walk:#5EC8E8;
+    --walk-dim:#1c3540;
+    --warn:#FF6A4D;
+    --line:#262B31;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    overscroll-behavior:none;
+    user-select:none;
+  }
+  body{
+    display:flex; flex-direction:column;
+    min-height:100vh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  .statusbar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 18px 6px;
+    font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted);
+  }
+  .gps-dot{
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .dot{
+    width:7px; height:7px; border-radius:50%; background:var(--warn);
+    box-shadow:0 0 0 0 rgba(255,106,77,.5);
+  }
+  .dot.locked{ background:var(--run); animation:pulse 2.2s infinite; }
+  @keyframes pulse{
+    0%{box-shadow:0 0 0 0 rgba(200,255,77,.35);}
+    70%{box-shadow:0 0 0 8px rgba(200,255,77,0);}
+    100%{box-shadow:0 0 0 0 rgba(200,255,77,0);}
+  }
+  .unit-toggle{
+    background:none; border:1px solid var(--line); color:var(--muted);
+    border-radius:20px; padding:4px 10px; font-size:11px; letter-spacing:.08em;
+    text-transform:uppercase; font-family:inherit;
+  }
+  .unit-toggle.active{ color:var(--text); border-color:var(--text); }
+
+  /* Mode pill — signature element */
+  .mode-wrap{ display:flex; justify-content:center; margin-top:8px; }
+  .mode-pill{
+    display:inline-flex; align-items:center; gap:10px;
+    padding:9px 22px; border-radius:999px;
+    font-weight:800; font-size:13px; letter-spacing:.18em; text-transform:uppercase;
+    background:var(--surface2); color:var(--muted);
+    border:1px solid var(--line);
+    transition:background .3s ease, color .3s ease, border-color .3s ease, transform .15s ease;
+  }
+  .mode-pill.run{ background:var(--run-dim); color:var(--run); border-color:var(--run); }
+  .mode-pill.walk{ background:var(--walk-dim); color:var(--walk); border-color:var(--walk); }
+  .mode-pill .pip{ width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .mode-pill.just-changed{ transform:scale(1.08); }
+
+  /* Speed gauge */
+  .gauge-wrap{ padding:22px 24px 6px; }
+  .gauge-track{
+    position:relative; height:6px; border-radius:6px; background:var(--surface2); overflow:hidden;
+  }
+  .gauge-fill{
+    position:absolute; left:0; top:0; bottom:0; width:0%;
+    background:linear-gradient(90deg, var(--walk), var(--run));
+    transition:width .4s ease;
+  }
+
+  .hero{
+    text-align:center; padding:10px 20px 4px;
+  }
+  .hero .value{
+    font-size:76px; font-weight:800; letter-spacing:-.02em;
+    font-variant-numeric: tabular-nums;
+    line-height:1;
+  }
+  .hero .unit{
+    font-size:18px; color:var(--muted); font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    margin-left:6px;
+  }
+  .hero .label{
+    margin-top:6px; font-size:12px; color:var(--muted); letter-spacing:.16em; text-transform:uppercase;
+  }
+
+  .totals{
+    display:grid; grid-template-columns:1fr 1fr; gap:12px;
+    padding:18px 18px 6px; flex:0 0 auto;
+  }
+  .card{
+    background:var(--surface); border-radius:16px; padding:16px 16px 14px;
+    border:1px solid var(--line);
+  }
+  .card h3{
+    margin:0 0 10px; font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    display:flex; align-items:center; gap:7px; font-weight:700;
+  }
+  .card.run h3{ color:var(--run); }
+  .card.walk h3{ color:var(--walk); }
+  .card h3 .pip{ width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .stat-row{
+    display:flex; justify-content:space-between; align-items:baseline;
+    padding:4px 0; font-variant-numeric: tabular-nums;
+  }
+  .stat-row .k{ color:var(--muted); font-size:12px; }
+  .stat-row .v{ font-size:16px; font-weight:700; }
+
+  .overall{
+    padding:10px 18px 4px; display:flex; justify-content:space-between;
+    color:var(--muted); font-size:12px; letter-spacing:.06em;
+  }
+  .overall b{ color:var(--text); font-size:14px; font-variant-numeric: tabular-nums; }
+
+  .spacer{ flex:1; }
+
+  .controls{
+    padding:16px 18px calc(18px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .row{ display:flex; gap:10px; }
+  button{
+    font-family:inherit; border:none; border-radius:14px;
+    padding:16px 0; font-size:15px; font-weight:800; letter-spacing:.06em; text-transform:uppercase;
+    flex:1; cursor:pointer;
+  }
+  #startBtn{ background:var(--run); color:#0B0E11; }
+  #pauseBtn{ background:var(--surface2); color:var(--text); border:1px solid var(--line); }
+  #resetBtn{ background:var(--surface2); color:var(--warn); border:1px solid var(--line); }
+  .override-row button{
+    background:var(--surface); color:var(--muted); border:1px solid var(--line);
+    padding:11px 0; font-size:12px;
+    transition:background .15s ease, color .15s ease, border-color .15s ease, transform .1s ease;
+  }
+  .override-row button:active{ transform:scale(0.94); }
+  .override-row button.active.run{ background:var(--run); color:#0B0E11; border-color:var(--run); }
+  .override-row button.active.walk{ background:var(--walk); color:#0B0E11; border-color:var(--walk); }
+  .override-row button.active.auto{ background:var(--text); color:#0B0E11; border-color:var(--text); }
+
+  .banner{
+    margin:0 18px; padding:9px 14px; border-radius:10px;
+    background:rgba(255,106,77,.12); color:var(--warn);
+    font-size:12px; text-align:center; display:none;
+  }
+  .banner.show{ display:block; }
+
+  .install-toast{
+    position:fixed; left:18px; right:18px; bottom:calc(18px + env(safe-area-inset-bottom));
+    background:var(--surface2); border:1px solid var(--line); border-radius:14px;
+    padding:14px 16px; display:none; align-items:center; justify-content:space-between; gap:12px;
+    z-index:50;
+  }
+  .install-toast.show{ display:flex; }
+  .install-toast span{ font-size:13px; color:var(--text); }
+  .install-toast button{
+    flex:none; padding:8px 14px; font-size:12px; background:var(--run); color:#0B0E11; border-radius:10px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="statusbar">
+    <span class="gps-dot"><span class="dot" id="gpsDot"></span><span id="gpsText">Waiting for GPS</span></span>
+    <button class="unit-toggle active" id="unitBtn">km</button>
+  </div>
+
+  <div class="mode-wrap">
+    <div class="mode-pill" id="modePill"><span class="pip"></span><span id="modeLabel">Idle</span></div>
+  </div>
+
+  <div class="gauge-wrap">
+    <div class="gauge-track"><div class="gauge-fill" id="gaugeFill"></div></div>
+  </div>
+
+  <div class="hero">
+    <div><span class="value" id="speedValue">0.0</span><span class="unit" id="speedUnit">km/h</span></div>
+    <div class="label">Current speed</div>
+  </div>
+
+  <div class="banner" id="accBanner">Weak GPS signal — move to open sky for better accuracy</div>
+
+  <div class="totals">
+    <div class="card run">
+      <h3><span class="pip"></span>Running</h3>
+      <div class="stat-row"><span class="k">Time</span><span class="v" id="runTime">00:00</span></div>
+      <div class="stat-row"><span class="k">Distance</span><span class="v" id="runDist">0.00 km</span></div>
+      <div class="stat-row"><span class="k">Avg speed</span><span class="v" id="runAvg">0.0 km/h</span></div>
+    </div>
+    <div class="card walk">
+      <h3><span class="pip"></span>Walking</h3>
+      <div class="stat-row"><span class="k">Time</span><span class="v" id="walkTime">00:00</span></div>
+      <div class="stat-row"><span class="k">Distance</span><span class="v" id="walkDist">0.00 km</span></div>
+      <div class="stat-row"><span class="k">Avg speed</span><span class="v" id="walkAvg">0.0 km/h</span></div>
+    </div>
+  </div>
+
+  <div class="overall">
+    <span>Total time <b id="totalTime">00:00</b></span>
+    <span>Total distance <b id="totalDist">0.00 km</b></span>
+  </div>
+
+  <div class="spacer"></div>
+
+  <div class="controls">
+    <div class="row override-row">
+      <button data-mode="auto" class="active auto" id="btnAuto">Auto</button>
+      <button data-mode="run" id="btnRun">Run</button>
+      <button data-mode="walk" id="btnWalk">Walk</button>
+    </div>
+    <div class="row">
+      <button id="startBtn">Start</button>
+      <button id="pauseBtn" style="display:none;">Pause</button>
+    </div>
+    <div class="row">
+      <button id="resetBtn">Reset session</button>
+    </div>
+  </div>
+
+  <div class="install-toast" id="installToast">
+    <span>Install Stride for a full-screen, offline-ready app</span>
+    <button id="installBtn">Install</button>
+  </div>
+
+<script>
+(function(){
+  // ---------- state ----------
+  let unit = 'km'; // 'km' or 'mi'
+  let watchId = null;
+  let tracking = false;
+  let paused = false;
+  let lastFix = null; // {lat, lon, t}
+  let overrideMode = 'auto'; // 'auto' | 'run' | 'walk'
+  let autoMode = 'idle'; // 'idle' | 'run' | 'walk'
+  let smoothedSpeed = 0; // m/s
+
+  const totals = {
+    run:  { time: 0, dist: 0 }, // seconds, meters
+    walk: { time: 0, dist: 0 },
+  };
+  let wakeLock = null;
+
+  // ---------- thresholds (m/s) ----------
+  const RUN_UP   = 7.5 / 3.6;  // switch to run above this
+  const RUN_DOWN = 6.0 / 3.6;  // switch to walk below this
+  const MOVING_MIN = 1.0 / 3.6; // below this = idle, not counted
+
+  // ---------- DOM ----------
+  const el = id => document.getElementById(id);
+  const gpsDot = el('gpsDot'), gpsText = el('gpsText');
+  const modePill = el('modePill'), modeLabel = el('modeLabel');
+  const gaugeFill = el('gaugeFill');
+  const speedValue = el('speedValue'), speedUnit = el('speedUnit');
+  const accBanner = el('accBanner');
+  const runTimeEl = el('runTime'), runDistEl = el('runDist'), runAvgEl = el('runAvg');
+  const walkTimeEl = el('walkTime'), walkDistEl = el('walkDist'), walkAvgEl = el('walkAvg');
+  const totalTimeEl = el('totalTime'), totalDistEl = el('totalDist');
+  const startBtn = el('startBtn'), pauseBtn = el('pauseBtn'), resetBtn = el('resetBtn');
+  const unitBtn = el('unitBtn');
+  const btnAuto = el('btnAuto'), btnRun = el('btnRun'), btnWalk = el('btnWalk');
+
+  // ---------- helpers ----------
+  function haversine(lat1, lon1, lat2, lon2){
+    const R = 6371000;
+    const toRad = d => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  function fmtTime(sec){
+    sec = Math.max(0, Math.round(sec));
+    const h = Math.floor(sec/3600);
+    const m = Math.floor((sec%3600)/60);
+    const s = sec%60;
+    const pad = n => String(n).padStart(2,'0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  }
+
+  function distDisplay(meters){
+    if(unit === 'km') return (meters/1000).toFixed(2) + ' km';
+    return (meters/1609.34).toFixed(2) + ' mi';
+  }
+
+  function speedDisplay(mps){
+    if(unit === 'km') return (mps*3.6).toFixed(1);
+    return (mps*2.23694).toFixed(1);
+  }
+
+  function avgSpeed(meters, seconds){
+    if(seconds < 1) return 0;
+    return meters/seconds;
+  }
+
+  // ---------- render ----------
+  function render(){
+    // mode pill
+    const activeMode = overrideMode === 'auto' ? autoMode : overrideMode;
+    modePill.className = 'mode-pill' + (activeMode === 'run' ? ' run' : activeMode === 'walk' ? ' walk' : '');
+    modeLabel.textContent = activeMode === 'idle' ? 'Idle' : activeMode === 'run' ? 'Running' : 'Walking';
+
+    // gauge: scale 0 to 14 km/h (~8.7mph) as full width, colored by speed
+    const kmh = smoothedSpeed * 3.6;
+    const pct = Math.min(100, (kmh / 14) * 100);
+    gaugeFill.style.width = pct + '%';
+
+    speedUnit.textContent = unit + '/h';
+    speedValue.textContent = speedDisplay(smoothedSpeed);
+
+    runTimeEl.textContent = fmtTime(totals.run.time);
+    runDistEl.textContent = distDisplay(totals.run.dist);
+    runAvgEl.textContent = speedDisplay(avgSpeed(totals.run.dist, totals.run.time)) + ' ' + unit + '/h';
+
+    walkTimeEl.textContent = fmtTime(totals.walk.time);
+    walkDistEl.textContent = distDisplay(totals.walk.dist);
+    walkAvgEl.textContent = speedDisplay(avgSpeed(totals.walk.dist, totals.walk.time)) + ' ' + unit + '/h';
+
+    totalTimeEl.textContent = fmtTime(totals.run.time + totals.walk.time);
+    totalDistEl.textContent = distDisplay(totals.run.dist + totals.walk.dist);
+  }
+
+  function pulsePill(){
+    modePill.classList.add('just-changed');
+    setTimeout(() => modePill.classList.remove('just-changed'), 150);
+  }
+
+  // ---------- geolocation ----------
+  function onPosition(pos){
+    const { latitude, longitude, accuracy, speed } = pos.coords;
+    const t = pos.timestamp;
+
+    gpsDot.classList.add('locked');
+    gpsText.textContent = accuracy ? `GPS ±${Math.round(accuracy)}m` : 'GPS locked';
+    accBanner.classList.toggle('show', accuracy > 25);
+
+    // discard very poor fixes entirely
+    if(accuracy && accuracy > 40){
+      lastFix = { lat: latitude, lon: longitude, t };
+      return;
+    }
+
+    if(lastFix){
+      const dt = (t - lastFix.t) / 1000; // seconds
+      if(dt > 0 && dt < 30){ // ignore huge gaps (app backgrounded etc)
+        const distM = haversine(lastFix.lat, lastFix.lon, latitude, longitude);
+        // prefer device-reported speed if present & sane, else derive from distance/time
+        let instSpeed = (typeof speed === 'number' && speed >= 0 && speed < 15) ? speed : (distM/dt);
+        // smooth
+        smoothedSpeed = smoothedSpeed*0.7 + instSpeed*0.3;
+
+        // hysteresis mode detection
+        if(overrideMode === 'auto'){
+          if(smoothedSpeed < MOVING_MIN) autoMode = 'idle';
+          else if(smoothedSpeed > RUN_UP) autoMode = 'run';
+          else if(smoothedSpeed < RUN_DOWN) autoMode = 'walk';
+          // else keep previous autoMode (hysteresis band)
+        }
+
+        if(tracking && !paused){
+          const activeMode = overrideMode === 'auto' ? autoMode : overrideMode;
+          if(activeMode === 'run' || activeMode === 'walk'){
+            // only accrue distance if actually moving, to avoid GPS drift counting while stationary
+            const moving = smoothedSpeed > MOVING_MIN * 0.6;
+            totals[activeMode].time += dt;
+            if(moving) totals[activeMode].dist += distM;
+          }
+        }
+      }
+    }
+    lastFix = { lat: latitude, lon: longitude, t };
+    render();
+  }
+
+  function onError(err){
+    gpsDot.classList.remove('locked');
+    gpsText.textContent = err.code === 1 ? 'Location permission denied' : 'GPS signal lost';
+  }
+
+  function startWatch(){
+    if(!('geolocation' in navigator)){
+      gpsText.textContent = 'Geolocation not supported';
+      return;
+    }
+    watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+      enableHighAccuracy: true,
+      maximumAge: 1000,
+      timeout: 15000
+    });
+  }
+
+  async function requestWakeLock(){
+    try{
+      if('wakeLock' in navigator){
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    }catch(e){ /* ignore - not critical */ }
+  }
+
+  // ---------- controls ----------
+  startBtn.addEventListener('click', () => {
+    tracking = true;
+    paused = false;
+    lastFix = null;
+    startBtn.style.display = 'none';
+    pauseBtn.style.display = 'block';
+    pauseBtn.textContent = 'Pause';
+    if(!watchId) startWatch();
+    requestWakeLock();
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+    if(!paused) lastFix = null; // avoid jump counted across the pause gap
+  });
+
+  resetBtn.addEventListener('click', () => {
+    tracking = false; paused = false; lastFix = null;
+    totals.run.time = 0; totals.run.dist = 0;
+    totals.walk.time = 0; totals.walk.dist = 0;
+    autoMode = 'idle'; overrideMode = 'auto';
+    setOverrideUI('auto');
+    startBtn.style.display = 'block';
+    pauseBtn.style.display = 'none';
+    render();
+  });
+
+  unitBtn.addEventListener('click', () => {
+    unit = unit === 'km' ? 'mi' : 'km';
+    unitBtn.textContent = unit;
+    render();
+  });
+
+  function setOverrideUI(mode){
+    [btnAuto, btnRun, btnWalk].forEach(b => b.classList.remove('active','run','walk','auto'));
+    if(mode === 'auto'){ btnAuto.classList.add('active','auto'); }
+    if(mode === 'run'){ btnRun.classList.add('active','run'); }
+    if(mode === 'walk'){ btnWalk.classList.add('active','walk'); }
+  }
+
+  [ [btnAuto,'auto'], [btnRun,'run'], [btnWalk,'walk'] ].forEach(([btn, mode]) => {
+    btn.addEventListener('click', () => {
+      overrideMode = mode;
+      setOverrideUI(mode);
+      render();
+      pulsePill();
+    });
+  });
+
+  // keep screen-on lock re-acquired if tab regains visibility mid-run
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible' && tracking && !paused) requestWakeLock();
+  });
+
+  // periodic re-render so idle time display doesn't look frozen between GPS fixes
+  setInterval(render, 1000);
+
+  render();
+
+  // ---------- PWA install + service worker ----------
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js').catch(() => {});
+    });
+  }
+
+  let deferredInstallPrompt = null;
+  const installToast = el('installToast');
+  const installBtn = el('installBtn');
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    installToast.classList.add('show');
+  });
+
+  if(installBtn){
+    installBtn.addEventListener('click', async () => {
+      installToast.classList.remove('show');
+      if(deferredInstallPrompt){
+        deferredInstallPrompt.prompt();
+        await deferredInstallPrompt.userChoice;
+        deferredInstallPrompt = null;
+      }
+    });
+  }
+
+  window.addEventListener('appinstalled', () => {
+    installToast.classList.remove('show');
+  });
+})();
+</script>
+</body>
+</html>
