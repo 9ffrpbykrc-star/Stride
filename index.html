@@ -169,6 +169,52 @@
   }
   .banner.show{ display:block; }
 
+  .history-btn{
+    background:none; border:1px solid var(--line); color:var(--muted);
+    border-radius:20px; padding:4px 10px; font-size:11px; letter-spacing:.08em;
+    text-transform:uppercase; font-family:inherit;
+  }
+
+  .history-overlay{
+    position:fixed; inset:0; background:var(--bg); z-index:100;
+    display:none; flex-direction:column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .history-overlay.show{ display:flex; }
+  .history-head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 18px; border-bottom:1px solid var(--line);
+  }
+  .history-head h2{ font-size:16px; margin:0; letter-spacing:.04em; }
+  .history-head button{
+    flex:none; background:var(--surface2); color:var(--text); border:1px solid var(--line);
+    padding:8px 14px; font-size:12px; border-radius:10px;
+  }
+  .history-list{ flex:1; overflow-y:auto; padding:14px 18px; }
+  .history-empty{
+    color:var(--muted); text-align:center; margin-top:60px; font-size:13px; line-height:1.6;
+  }
+  .history-item{
+    background:var(--surface); border:1px solid var(--line); border-radius:14px;
+    padding:14px 16px; margin-bottom:10px;
+  }
+  .history-item .hdate{
+    font-size:12px; color:var(--muted); margin-bottom:8px; letter-spacing:.04em;
+  }
+  .history-item .htotals{
+    display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;
+  }
+  .history-item .htotals b{ font-size:20px; font-variant-numeric: tabular-nums; }
+  .history-item .htotals span{ font-size:12px; color:var(--muted); }
+  .history-split{ display:flex; gap:14px; font-size:12px; color:var(--muted); }
+  .history-split b{ color:var(--text); font-variant-numeric: tabular-nums; }
+  .history-clear{
+    margin:8px 18px calc(14px + env(safe-area-inset-bottom));
+    background:var(--surface2); color:var(--warn); border:1px solid var(--line);
+    padding:13px 0; font-size:12px; border-radius:12px; font-weight:800;
+    letter-spacing:.06em; text-transform:uppercase;
+  }
+
   .install-toast{
     position:fixed; left:18px; right:18px; bottom:calc(18px + env(safe-area-inset-bottom));
     background:var(--surface2); border:1px solid var(--line); border-radius:14px;
@@ -186,7 +232,10 @@
 
   <div class="statusbar">
     <span class="gps-dot"><span class="dot" id="gpsDot"></span><span id="gpsText">Waiting for GPS</span></span>
-    <button class="unit-toggle active" id="unitBtn">km</button>
+    <span style="display:flex; gap:8px;">
+      <button class="history-btn" id="historyBtn">History</button>
+      <button class="unit-toggle active" id="unitBtn">km</button>
+    </span>
   </div>
 
   <div class="mode-wrap">
@@ -239,6 +288,15 @@
     <div class="row">
       <button id="resetBtn">Reset session</button>
     </div>
+  </div>
+
+  <div class="history-overlay" id="historyOverlay">
+    <div class="history-head">
+      <h2>History</h2>
+      <button id="historyCloseBtn">Close</button>
+    </div>
+    <div class="history-list" id="historyList"></div>
+    <button class="history-clear" id="historyClearBtn">Clear all history</button>
   </div>
 
   <div class="install-toast" id="installToast">
@@ -440,6 +498,14 @@
   });
 
   resetBtn.addEventListener('click', () => {
+    // save this session to history if anything was actually tracked
+    if(totals.run.time > 0 || totals.walk.time > 0){
+      addHistoryEntry({
+        date: Date.now(),
+        runTime: totals.run.time, runDist: totals.run.dist,
+        walkTime: totals.walk.time, walkDist: totals.walk.dist
+      });
+    }
     tracking = false; paused = false; lastFix = null;
     totals.run.time = 0; totals.run.dist = 0;
     totals.walk.time = 0; totals.walk.dist = 0;
@@ -448,6 +514,79 @@
     startBtn.style.display = 'block';
     pauseBtn.style.display = 'none';
     render();
+  });
+
+  // ---------- history (saved locally on this device) ----------
+  const HISTORY_KEY = 'strideHistoryV1';
+
+  function loadHistory(){
+    try{ return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+
+  function saveHistoryList(list){
+    try{ localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 300))); }
+    catch(e){ /* storage full or unavailable - ignore */ }
+  }
+
+  function addHistoryEntry(entry){
+    const list = loadHistory();
+    list.unshift(entry);
+    saveHistoryList(list);
+  }
+
+  function fmtHistoryDate(ts){
+    const d = new Date(ts);
+    const dateStr = d.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short' });
+    const timeStr = d.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' });
+    return `${dateStr} · ${timeStr}`;
+  }
+
+  function renderHistory(){
+    const list = loadHistory();
+    if(list.length === 0){
+      historyList.innerHTML = '<div class="history-empty">No sessions saved yet.<br>Finish a session with "Reset session" to log it here.</div>';
+      return;
+    }
+    historyList.innerHTML = list.map(item => {
+      const totalTime = item.runTime + item.walkTime;
+      const totalDist = item.runDist + item.walkDist;
+      return `
+        <div class="history-item">
+          <div class="hdate">${fmtHistoryDate(item.date)}</div>
+          <div class="htotals">
+            <b>${distDisplay(totalDist)}</b>
+            <span>${fmtTime(totalTime)} total</span>
+          </div>
+          <div class="history-split">
+            <span>Run <b>${distDisplay(item.runDist)}</b> · ${fmtTime(item.runTime)}</span>
+            <span>Walk <b>${distDisplay(item.walkDist)}</b> · ${fmtTime(item.walkTime)}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  const historyBtn = el('historyBtn');
+  const historyOverlay = el('historyOverlay');
+  const historyList = el('historyList');
+  const historyCloseBtn = el('historyCloseBtn');
+  const historyClearBtn = el('historyClearBtn');
+
+  historyBtn.addEventListener('click', () => {
+    renderHistory();
+    historyOverlay.classList.add('show');
+  });
+
+  historyCloseBtn.addEventListener('click', () => {
+    historyOverlay.classList.remove('show');
+  });
+
+  historyClearBtn.addEventListener('click', () => {
+    if(confirm('Clear all saved history? This cannot be undone.')){
+      saveHistoryList([]);
+      renderHistory();
+    }
   });
 
   unitBtn.addEventListener('click', () => {
